@@ -1,3 +1,4 @@
+/* this file serves static files and routes API requests */
 const app = require("./server");
 const socketIO = require("./socket.io")(app);
 
