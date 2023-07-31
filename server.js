@@ -22,6 +22,7 @@ app.use(
   })
 );
 
+app.use("/api", require("./routes/DesignAutomation"));
 app.set("port", process.env.PORT || 8080);
 
 module.exports = app;
