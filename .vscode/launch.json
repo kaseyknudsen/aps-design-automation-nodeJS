@@ -12,7 +12,7 @@
       "env": {
         "APS_CLIENT_ID": "YP5YYQGySSJPF8N8UKDwLEzItnxEWSn0",
         "APS_CLIENT_SECRET": "hhPGRd5FhaAORGTM",
-        "APS_WEBHOOK_URL": "http://d2a7-162-207-204-5.ngrok-free.app"
+        "APS_WEBHOOK_URL": "https://ec03-24-193-117-114.ngrok-free.app"
       }
     }
   ]

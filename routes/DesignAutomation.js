@@ -373,4 +373,289 @@ router.post(
   }
 );
 
+/// <summary>
+/// CreateActivity a new Activity
+/// </summary>
+router.post(
+  "/aps/designautomation/activities",
+  async (/*CreateActivity*/ req, res) => {
+    const activitySpecs = req.body;
+
+    // basic input validation
+    const zipFileName = activitySpecs.zipFileName;
+    const engineName = activitySpecs.engine;
+
+    // standard name for this sample
+    const appBundleName = zipFileName + "AppBundle";
+    const activityName = zipFileName + "Activity";
+
+    // get defined activities
+    const api = await Utils.dav3API(req.oauth_token);
+    let activities = null;
+    try {
+      activities = await api.getActivities();
+    } catch (ex) {
+      console.error(ex);
+      return res.status(500).json({
+        diagnostic: "Failed to get activity list",
+      });
+    }
+    const qualifiedActivityId = `${Utils.NickName}.${activityName}+${Utils.Alias}`;
+    if (!activities.data.includes(qualifiedActivityId)) {
+      // define the activity
+      // ToDo: parametrize for different engines...
+      const engineAttributes = Utils.EngineAttributes(engineName);
+      const commandLine = engineAttributes.commandLine.replace(
+        "{0}",
+        appBundleName
+      );
+      const activitySpec = {
+        id: activityName,
+        appbundles: [`${Utils.NickName}.${appBundleName}+${Utils.Alias}`],
+        commandLine: [commandLine],
+        engine: engineName,
+        parameters: {
+          inputFile: {
+            description: "input file",
+            localName: "$(inputFile)",
+            ondemand: false,
+            required: true,
+            verb: dav3.Verb.get,
+            zip: false,
+          },
+          inputJson: {
+            description: "input json",
+            localName: "params.json",
+            ondemand: false,
+            required: false,
+            verb: dav3.Verb.get,
+            zip: false,
+          },
+          outputFile: {
+            description: "output file",
+            localName: "outputFile." + engineAttributes.extension,
+            ondemand: false,
+            required: true,
+            verb: dav3.Verb.put,
+            zip: false,
+          },
+        },
+        settings: {
+          script: {
+            value: engineAttributes.script,
+          },
+        },
+      };
+      try {
+        const newActivity = await api.createActivity(activitySpec);
+      } catch (ex) {
+        console.error(ex);
+        return res.status(500).json({
+          diagnostic: "Failed to create new activity",
+        });
+      }
+      // specify the alias for this Activity
+      const aliasSpec = {
+        id: Utils.Alias,
+        version: 1,
+      };
+      try {
+        const newAlias = await api.createActivityAlias(activityName, aliasSpec);
+      } catch (ex) {
+        console.error(ex);
+        return res.status(500).json({
+          diagnostic: "Failed to create new alias for activity",
+        });
+      }
+      res.status(200).json({
+        activity: qualifiedActivityId,
+      });
+      return;
+    }
+
+    // as this activity points to a AppBundle "dev" alias (which points to the last version of the bundle),
+    // there is no need to update it (for this sample), but this may be extended for different contexts
+    res.status(200).json({
+      activity: "Activity already defined",
+    });
+  }
+);
+
+/// <summary>
+/// Get all Activities defined for this account
+/// </summary>
+router.get(
+  "/aps/designautomation/activities",
+  async (/*GetDefinedActivities*/ req, res) => {
+    const api = await Utils.dav3API(req.oauth_token);
+    // filter list of
+    let activities = null;
+    try {
+      activities = await api.getActivities();
+    } catch (ex) {
+      console.error(ex);
+      return res.status(500).json({
+        diagnostic: "Failed to get activity list",
+      });
+    }
+    let definedActivities = [];
+    for (let i = 0; i < activities.data.length; i++) {
+      let activity = activities.data[i];
+      if (
+        activity.startsWith(Utils.NickName) &&
+        activity.indexOf("$LATEST") === -1
+      )
+        definedActivities.push(activity.replace(Utils.NickName + ".", ""));
+    }
+
+    res.status(200).json(definedActivities);
+  }
+);
+
+/// <summary>
+/// Direct To S3
+/// ref : https://aps.autodesk.com/blog/new-feature-support-direct-s3-migration-inputoutput-files-design-automation
+/// </summary>
+
+const getObjectId = async (bucketKey, objectKey, req) => {
+    try {
+      let contentStream = _fs.createReadStream(req.file.path);
+  
+      //uploadResources takes an Object or Object array of resource to uplaod with their parameters,
+      //we are just passing only one object.
+      let uploadResponse = await new ForgeAPI.ObjectsApi().uploadResources(
+        bucketKey,
+        [
+          //object
+          {
+            objectKey: objectKey,
+            data: contentStream,
+            length: req.file.size,
+          },
+        ],
+        {
+          useAcceleration: false, //Whether or not to generate an accelerated signed URL
+          minutesExpiration: 20, //The custom expiration time within the 1 to 60 minutes range, if not specified, default is 2 minutes
+          onUploadProgress: (data) => console.warn(data), // function (progressEvent) => {}
+        },
+        req.oauth_client,
+        req.oauth_token
+      );
+      //lets check for the first and only entry.
+      if (uploadResponse[0].hasOwnProperty("error") && uploadResponse[0].error) {
+        throw new Error(uploadResponse[0].completed.reason);
+      }
+      console.log(uploadResponse[0].completed.objectId);
+      return uploadResponse[0].completed.objectId;
+    } catch (ex) {
+      console.error("Failed to create ObjectID\n", ex);
+      throw ex;
+    }
+  };
+  /// <summary>
+  /// Start a new workitem
+  /// </summary>
+  router.post(
+    "/aps/designautomation/workitems",
+    multer({
+      dest: "uploads/",
+    }).single("inputFile"),
+    async (/*StartWorkitem*/ req, res) => {
+      const input = req.body;
+  
+      // basic input validation
+      const workItemData = JSON.parse(input.data);
+      const widthParam = parseFloat(workItemData.width);
+      const heigthParam = parseFloat(workItemData.height);
+      const activityName = `${Utils.NickName}.${workItemData.activityName}`;
+      const browserConnectionId = workItemData.browserConnectionId;
+  
+      // save the file on the server
+      const ContentRootPath = _path.resolve(_path.join(__dirname, "../.."));
+      const fileSavePath = _path.join(
+        ContentRootPath,
+        _path.basename(req.file.originalname)
+      );
+  
+      // upload file to OSS Bucket
+      // 1. ensure bucket existis
+      const bucketKey = Utils.NickName.toLowerCase() + "-designautomation";
+      try {
+        let payload = new ForgeAPI.PostBucketsPayload();
+        payload.bucketKey = bucketKey;
+        payload.policyKey = "transient"; // expires in 24h
+        await new ForgeAPI.BucketsApi().createBucket(
+          payload,
+          {},
+          req.oauth_client,
+          req.oauth_token
+        );
+      } catch (ex) {
+        // in case bucket already exists
+      }
+      // 2. upload inputFile
+      const inputFileNameOSS = `${new Date()
+        .toISOString()
+        .replace(/[-T:\.Z]/gm, "")
+        .substring(0, 14)}_input_${_path.basename(req.file.originalname)}`; // avoid overriding
+      // prepare workitem arguments
+      const bearerToken = ["Bearer", req.oauth_token.access_token].join(" ");
+      // 1. input file
+      const inputFileArgument = {
+        url: await getObjectId(bucketKey, inputFileNameOSS, req),
+        headers: { Authorization: bearerToken },
+      };
+      // 2. input json
+      const inputJson = {
+        width: widthParam,
+        height: heigthParam,
+      };
+      const inputJsonArgument = {
+        url:
+          "data:application/json, " +
+          JSON.stringify(inputJson).replace(/"/g, "'"),
+      };
+      // 3. output file
+      const outputFileNameOSS = `${new Date()
+        .toISOString()
+        .replace(/[-T:\.Z]/gm, "")
+        .substring(0, 14)}_output_${_path.basename(req.file.originalname)}`; // avoid overriding
+      const outputFileArgument = {
+        url: await getObjectId(bucketKey, outputFileNameOSS, req),
+        verb: dav3.Verb.put,
+        headers: { Authorization: bearerToken },
+      };
+  
+      // prepare & submit workitem
+      // the callback contains the connectionId (used to identify the client) and the outputFileName of this workitem
+      const callbackUrl = `${config.credentials.webhook_url}/api/aps/callback/designautomation?id=${browserConnectionId}&outputFileName=${outputFileNameOSS}&inputFileName=${inputFileNameOSS}`;
+      const workItemSpec = {
+        activityId: activityName,
+        arguments: {
+          inputFile: inputFileArgument,
+          inputJson: inputJsonArgument,
+          outputFile: outputFileArgument,
+          onComplete: {
+            verb: dav3.Verb.post,
+            url: callbackUrl,
+          },
+        },
+      };
+      let workItemStatus = null;
+      try {
+        const api = await Utils.dav3API(req.oauth_token);
+        workItemStatus = await api.createWorkItem(workItemSpec);
+      } catch (ex) {
+        console.error(ex);
+        return res.status(500).json({
+          diagnostic: "Failed to create a workitem",
+        });
+      }
+      res.status(200).json({
+        workItemId: workItemStatus.id,
+      });
+    }
+  );
+
+
 module.exports = router;
