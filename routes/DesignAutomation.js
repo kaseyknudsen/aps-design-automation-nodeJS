@@ -518,144 +518,226 @@ router.get(
 /// </summary>
 
 const getObjectId = async (bucketKey, objectKey, req) => {
-    try {
-      let contentStream = _fs.createReadStream(req.file.path);
-  
-      //uploadResources takes an Object or Object array of resource to uplaod with their parameters,
-      //we are just passing only one object.
-      let uploadResponse = await new ForgeAPI.ObjectsApi().uploadResources(
-        bucketKey,
-        [
-          //object
-          {
-            objectKey: objectKey,
-            data: contentStream,
-            length: req.file.size,
-          },
-        ],
+  try {
+    let contentStream = _fs.createReadStream(req.file.path);
+
+    //uploadResources takes an Object or Object array of resource to uplaod with their parameters,
+    //we are just passing only one object.
+    let uploadResponse = await new ForgeAPI.ObjectsApi().uploadResources(
+      bucketKey,
+      [
+        //object
         {
-          useAcceleration: false, //Whether or not to generate an accelerated signed URL
-          minutesExpiration: 20, //The custom expiration time within the 1 to 60 minutes range, if not specified, default is 2 minutes
-          onUploadProgress: (data) => console.warn(data), // function (progressEvent) => {}
+          objectKey: objectKey,
+          data: contentStream,
+          length: req.file.size,
         },
+      ],
+      {
+        useAcceleration: false, //Whether or not to generate an accelerated signed URL
+        minutesExpiration: 20, //The custom expiration time within the 1 to 60 minutes range, if not specified, default is 2 minutes
+        onUploadProgress: (data) => console.warn(data), // function (progressEvent) => {}
+      },
+      req.oauth_client,
+      req.oauth_token
+    );
+    //lets check for the first and only entry.
+    if (uploadResponse[0].hasOwnProperty("error") && uploadResponse[0].error) {
+      throw new Error(uploadResponse[0].completed.reason);
+    }
+    console.log(uploadResponse[0].completed.objectId);
+    return uploadResponse[0].completed.objectId;
+  } catch (ex) {
+    console.error("Failed to create ObjectID\n", ex);
+    throw ex;
+  }
+};
+/// <summary>
+/// Start a new workitem
+/// </summary>
+router.post(
+  "/aps/designautomation/workitems",
+  multer({
+    dest: "uploads/",
+  }).single("inputFile"),
+  async (/*StartWorkitem*/ req, res) => {
+    const input = req.body;
+
+    // basic input validation
+    const workItemData = JSON.parse(input.data);
+    const widthParam = parseFloat(workItemData.width);
+    const heigthParam = parseFloat(workItemData.height);
+    const activityName = `${Utils.NickName}.${workItemData.activityName}`;
+    const browserConnectionId = workItemData.browserConnectionId;
+
+    // save the file on the server
+    const ContentRootPath = _path.resolve(_path.join(__dirname, "../.."));
+    const fileSavePath = _path.join(
+      ContentRootPath,
+      _path.basename(req.file.originalname)
+    );
+
+    // upload file to OSS Bucket
+    // 1. ensure bucket existis
+    const bucketKey = Utils.NickName.toLowerCase() + "-designautomation";
+    try {
+      let payload = new ForgeAPI.PostBucketsPayload();
+      payload.bucketKey = bucketKey;
+      payload.policyKey = "transient"; // expires in 24h
+      await new ForgeAPI.BucketsApi().createBucket(
+        payload,
+        {},
         req.oauth_client,
         req.oauth_token
       );
-      //lets check for the first and only entry.
-      if (uploadResponse[0].hasOwnProperty("error") && uploadResponse[0].error) {
-        throw new Error(uploadResponse[0].completed.reason);
-      }
-      console.log(uploadResponse[0].completed.objectId);
-      return uploadResponse[0].completed.objectId;
     } catch (ex) {
-      console.error("Failed to create ObjectID\n", ex);
-      throw ex;
+      // in case bucket already exists
     }
-  };
-  /// <summary>
-  /// Start a new workitem
-  /// </summary>
-  router.post(
-    "/aps/designautomation/workitems",
-    multer({
-      dest: "uploads/",
-    }).single("inputFile"),
-    async (/*StartWorkitem*/ req, res) => {
-      const input = req.body;
-  
-      // basic input validation
-      const workItemData = JSON.parse(input.data);
-      const widthParam = parseFloat(workItemData.width);
-      const heigthParam = parseFloat(workItemData.height);
-      const activityName = `${Utils.NickName}.${workItemData.activityName}`;
-      const browserConnectionId = workItemData.browserConnectionId;
-  
-      // save the file on the server
-      const ContentRootPath = _path.resolve(_path.join(__dirname, "../.."));
-      const fileSavePath = _path.join(
-        ContentRootPath,
-        _path.basename(req.file.originalname)
-      );
-  
-      // upload file to OSS Bucket
-      // 1. ensure bucket existis
+    // 2. upload inputFile
+    const inputFileNameOSS = `${new Date()
+      .toISOString()
+      .replace(/[-T:\.Z]/gm, "")
+      .substring(0, 14)}_input_${_path.basename(req.file.originalname)}`; // avoid overriding
+    // prepare workitem arguments
+    const bearerToken = ["Bearer", req.oauth_token.access_token].join(" ");
+    // 1. input file
+    const inputFileArgument = {
+      url: await getObjectId(bucketKey, inputFileNameOSS, req),
+      headers: { Authorization: bearerToken },
+    };
+    // 2. input json
+    const inputJson = {
+      width: widthParam,
+      height: heigthParam,
+    };
+    const inputJsonArgument = {
+      url:
+        "data:application/json, " +
+        JSON.stringify(inputJson).replace(/"/g, "'"),
+    };
+    // 3. output file
+    const outputFileNameOSS = `${new Date()
+      .toISOString()
+      .replace(/[-T:\.Z]/gm, "")
+      .substring(0, 14)}_output_${_path.basename(req.file.originalname)}`; // avoid overriding
+    const outputFileArgument = {
+      url: await getObjectId(bucketKey, outputFileNameOSS, req),
+      verb: dav3.Verb.put,
+      headers: { Authorization: bearerToken },
+    };
+
+    // prepare & submit workitem
+    // the callback contains the connectionId (used to identify the client) and the outputFileName of this workitem
+    const callbackUrl = `${config.credentials.webhook_url}/api/aps/callback/designautomation?id=${browserConnectionId}&outputFileName=${outputFileNameOSS}&inputFileName=${inputFileNameOSS}`;
+    const workItemSpec = {
+      activityId: activityName,
+      arguments: {
+        inputFile: inputFileArgument,
+        inputJson: inputJsonArgument,
+        outputFile: outputFileArgument,
+        onComplete: {
+          verb: dav3.Verb.post,
+          url: callbackUrl,
+        },
+      },
+    };
+    let workItemStatus = null;
+    try {
+      const api = await Utils.dav3API(req.oauth_token);
+      workItemStatus = await api.createWorkItem(workItemSpec);
+    } catch (ex) {
+      console.error(ex);
+      return res.status(500).json({
+        diagnostic: "Failed to create a workitem",
+      });
+    }
+    res.status(200).json({
+      workItemId: workItemStatus.id,
+    });
+  }
+);
+
+/// <summary>
+/// Callback from Design Automation Workitem (onProgress or onComplete)
+/// </summary>
+router.post(
+  "/aps/callback/designautomation",
+  async (/*OnCallback*/ req, res) => {
+    // your webhook should return immediately! we could use Hangfire to schedule a job instead
+    // ALWAYS return ok (200)
+    res.status(200).end();
+
+    try {
+      const socketIO = require("../server").io;
+
+      // your webhook should return immediately! we can use Hangfire to schedule a job
+      const bodyJson = req.body;
+      socketIO.to(req.query.id).emit("onComplete", bodyJson);
+
+      http.get(bodyJson.reportUrl, (response) => {
+        //socketIO.to(req.query.id).emit('onComplete', response);
+        response.setEncoding("utf8");
+        let rawData = "";
+        response.on("data", (chunk) => {
+          rawData += chunk;
+        });
+        response.on("end", () => {
+          socketIO.to(req.query.id).emit("onComplete", rawData);
+        });
+      });
+
+      const objectsApi = new ForgeAPI.ObjectsApi();
       const bucketKey = Utils.NickName.toLowerCase() + "-designautomation";
+      if (bodyJson.status === "success") {
+        try {
+          //create a S3 presigned URL and send to client
+          let response = await objectsApi.getS3DownloadURL(
+            bucketKey,
+            req.query.outputFileName,
+            { useAcceleration: false, minutesExpiration: 15 },
+            req.oauth_client,
+            req.oauth_token
+          );
+          socketIO.to(req.query.id).emit("downloadResult", response.body.url);
+        } catch (ex) {
+          console.error(ex);
+          socketIO
+            .to(req.query.id)
+            .emit(
+              "onComplete",
+              "Failed to create presigned URL for outputFile.\nYour outputFile is available in your OSS bucket."
+            );
+        }
+      }
+
+      // delete the input file (we do not need it anymore)
       try {
-        let payload = new ForgeAPI.PostBucketsPayload();
-        payload.bucketKey = bucketKey;
-        payload.policyKey = "transient"; // expires in 24h
-        await new ForgeAPI.BucketsApi().createBucket(
-          payload,
-          {},
+        await objectsApi.deleteObject(
+          bucketKey,
+          req.query.inputFileName,
           req.oauth_client,
           req.oauth_token
         );
       } catch (ex) {
-        // in case bucket already exists
-      }
-      // 2. upload inputFile
-      const inputFileNameOSS = `${new Date()
-        .toISOString()
-        .replace(/[-T:\.Z]/gm, "")
-        .substring(0, 14)}_input_${_path.basename(req.file.originalname)}`; // avoid overriding
-      // prepare workitem arguments
-      const bearerToken = ["Bearer", req.oauth_token.access_token].join(" ");
-      // 1. input file
-      const inputFileArgument = {
-        url: await getObjectId(bucketKey, inputFileNameOSS, req),
-        headers: { Authorization: bearerToken },
-      };
-      // 2. input json
-      const inputJson = {
-        width: widthParam,
-        height: heigthParam,
-      };
-      const inputJsonArgument = {
-        url:
-          "data:application/json, " +
-          JSON.stringify(inputJson).replace(/"/g, "'"),
-      };
-      // 3. output file
-      const outputFileNameOSS = `${new Date()
-        .toISOString()
-        .replace(/[-T:\.Z]/gm, "")
-        .substring(0, 14)}_output_${_path.basename(req.file.originalname)}`; // avoid overriding
-      const outputFileArgument = {
-        url: await getObjectId(bucketKey, outputFileNameOSS, req),
-        verb: dav3.Verb.put,
-        headers: { Authorization: bearerToken },
-      };
-  
-      // prepare & submit workitem
-      // the callback contains the connectionId (used to identify the client) and the outputFileName of this workitem
-      const callbackUrl = `${config.credentials.webhook_url}/api/aps/callback/designautomation?id=${browserConnectionId}&outputFileName=${outputFileNameOSS}&inputFileName=${inputFileNameOSS}`;
-      const workItemSpec = {
-        activityId: activityName,
-        arguments: {
-          inputFile: inputFileArgument,
-          inputJson: inputJsonArgument,
-          outputFile: outputFileArgument,
-          onComplete: {
-            verb: dav3.Verb.post,
-            url: callbackUrl,
-          },
-        },
-      };
-      let workItemStatus = null;
-      try {
-        const api = await Utils.dav3API(req.oauth_token);
-        workItemStatus = await api.createWorkItem(workItemSpec);
-      } catch (ex) {
         console.error(ex);
-        return res.status(500).json({
-          diagnostic: "Failed to create a workitem",
-        });
       }
-      res.status(200).json({
-        workItemId: workItemStatus.id,
-      });
+    } catch (ex) {
+      console.error(ex);
     }
-  );
+  }
+);
 
+/// <summary>
+/// Clear the accounts (for debugging purpouses)
+/// </summary>
+router.delete(
+  "/aps/designautomation/account",
+  async (/*ClearAccount*/ req, res) => {
+    let api = await Utils.dav3API(req.oauth_token);
+    // clear account
+    await api.deleteForgeApp("me");
+    res.status(200).end();
+  }
+);
 
 module.exports = router;
