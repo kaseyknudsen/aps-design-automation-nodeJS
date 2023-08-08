@@ -19,6 +19,6 @@
     "forge-apis": "^0.9.6",
     "form-data": "^4.0.0",
     "multer": "^1.4.5-lts.1",
-    "socket.io": "^4.7.1"
+    "socket.io": "^4.7.2"
   }
 }
