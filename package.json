@@ -1,7 +1,6 @@
 {
   "name": "designautomationsamplenodejs",
   "version": "1.0.0",
-  "description": "",
   "main": "start.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
@@ -20,5 +19,14 @@
     "form-data": "^4.0.0",
     "multer": "^1.4.5-lts.1",
     "socket.io": "^4.7.2"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kaseyknudsen/aps-design-automation-nodeJS.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kaseyknudsen/aps-design-automation-nodeJS/issues"
+  },
+  "homepage": "https://github.com/kaseyknudsen/aps-design-automation-nodeJS#readme",
+  "description": ""
 }
